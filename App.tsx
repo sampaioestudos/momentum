@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import type { Task, Gamification, AiInsight, JiraIssue } from './types';
@@ -61,30 +60,21 @@ interface TaskItemProps {
 }
 
 const TaskItem = React.memo(({ task, onToggleTimer, onDelete, onComplete, onLogJira, t }: TaskItemProps) => {
-  const [time, setTime] = useState(task.timeSpent);
-
-  useEffect(() => {
-    let interval: number | undefined;
-    if (task.isActive) {
-      interval = window.setInterval(() => {
-        setTime(prevTime => prevTime + 1);
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [task.isActive]);
-  
-  useEffect(() => {
-    setTime(task.timeSpent);
-  }, [task.timeSpent]);
-  
   const formatTime = (totalSeconds: number) => {
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
-    return [hours, minutes, seconds].map(v => v < 10 ? '0' + v : v).filter((v,i) => v !== '00' || i > 0).join(':');
+    
+    const paddedMinutes = String(minutes).padStart(2, '0');
+    const paddedSeconds = String(seconds).padStart(2, '0');
+
+    if (hours > 0) {
+      return `${String(hours).padStart(2, '0')}:${paddedMinutes}:${paddedSeconds}`;
+    }
+    return `${paddedMinutes}:${paddedSeconds}`;
   };
 
-  const progress = (time % POMODORO_DURATION) / POMODORO_DURATION * 100;
+  const progress = (task.timeSpent % POMODORO_DURATION) / POMODORO_DURATION * 100;
   
   return (
     <div className="flex items-center justify-between bg-white/5 p-4 rounded-lg transition-all duration-300 hover:bg-white/10 mb-3">
@@ -100,11 +90,11 @@ const TaskItem = React.memo(({ task, onToggleTimer, onDelete, onComplete, onLogJ
         <div className="flex items-center gap-4">
             <div className="relative flex items-center justify-center">
               <CircularProgress progress={progress} size={50} />
-              <span className="absolute text-xs font-mono text-medium-text">{formatTime(time)}</span>
+              <span className="absolute text-xs font-mono text-medium-text">{formatTime(task.timeSpent)}</span>
             </div>
             <div className="flex gap-2">
               <button onClick={() => onComplete(task.id)} title={t('complete')} className="p-2 text-green-400 hover:text-white rounded-full bg-white/10 hover:bg-green-500 transition-colors"><CheckIcon /></button>
-              {task.jiraIssue && <button onClick={() => onLogJira(task.jiraIssue!.key, time)} title={t('logToJira')} className="p-2 text-blue-400 hover:text-white rounded-full bg-white/10 hover:bg-blue-500 transition-colors">J</button>}
+              {task.jiraIssue && <button onClick={() => onLogJira(task.jiraIssue!.key, task.timeSpent)} title={t('logToJira')} className="p-2 text-blue-400 hover:text-white rounded-full bg-white/10 hover:bg-blue-500 transition-colors">J</button>}
               <button onClick={() => onDelete(task.id)} title={t('delete')} className="p-2 text-red-400 hover:text-white rounded-full bg-white/10 hover:bg-red-500 transition-colors"><DeleteIcon /></button>
             </div>
         </div>
@@ -178,18 +168,38 @@ export default function App() {
     }
   }, [jiraQuery, searchJiraIssues]);
   
-  // Data persistence
+  // Data persistence (Robust)
   useEffect(() => {
-    const savedTasks = localStorage.getItem('momentum_tasks');
-    const savedGamification = localStorage.getItem('momentum_gamification');
-    const savedLang = localStorage.getItem('momentum_lang');
-    if (savedTasks) {
-      const parsedTasks: Task[] = JSON.parse(savedTasks);
-      // Ensure no tasks are active on load
-      setTasks(parsedTasks.map(t => ({...t, isActive: false})));
+    try {
+        const savedTasks = localStorage.getItem('momentum_tasks');
+        if (savedTasks) {
+            const parsedTasks: Task[] = JSON.parse(savedTasks);
+            if (Array.isArray(parsedTasks)) {
+                setTasks(parsedTasks.map(t => ({...t, isActive: false})));
+            }
+        }
+    } catch (error) {
+        console.error("Failed to load tasks from localStorage:", error);
+        localStorage.removeItem('momentum_tasks');
     }
-    if (savedGamification) setGamification(JSON.parse(savedGamification));
-    if (savedLang) setLang(savedLang as 'pt' | 'en');
+
+    try {
+        const savedGamification = localStorage.getItem('momentum_gamification');
+        if (savedGamification) {
+            const parsedGamification: Gamification = JSON.parse(savedGamification);
+            if (parsedGamification && typeof parsedGamification.points === 'number') {
+                setGamification(parsedGamification);
+            }
+        }
+    } catch (error) {
+        console.error("Failed to load gamification from localStorage:", error);
+        localStorage.removeItem('momentum_gamification');
+    }
+    
+    const savedLang = localStorage.getItem('momentum_lang');
+    if (savedLang === 'pt' || savedLang === 'en') {
+        setLang(savedLang);
+    }
   }, []);
 
   useEffect(() => {
@@ -204,7 +214,7 @@ export default function App() {
     localStorage.setItem('momentum_lang', lang);
   }, [lang]);
 
-  // Timer logic
+  // Centralized timer logic
   useEffect(() => {
     const activeTask = tasks.find(t => t.isActive);
     if (!activeTask) return;
@@ -225,8 +235,8 @@ export default function App() {
     setTimeout(() => setNotification(null), 3000);
   };
   
-  const handleLevelUp = (newGamificationState: Gamification) => {
-    if (newGamificationState.level > gamification.level) {
+  const handleLevelUp = (newGamificationState: Gamification, oldLevel: number) => {
+    if (newGamificationState.level > oldLevel) {
         setShowConfetti(true);
         setTimeout(() => setShowConfetti(false), 5000);
         showNotification(`🎉 Level Up! You've reached Level ${newGamificationState.level}!`);
@@ -251,10 +261,10 @@ export default function App() {
       }
       
       const newGamificationState = { points: Math.floor(newPoints), level: newLevel, badge: newBadge, nextLevelPoints };
-      handleLevelUp(newGamificationState);
+      handleLevelUp(newGamificationState, prev.level);
       return newGamificationState;
     });
-  }, [gamification.level]);
+  }, []);
 
 
   // --- HANDLERS ---
@@ -277,24 +287,26 @@ export default function App() {
   };
 
   const handleToggleTimer = useCallback((id: string) => {
-    setTasks(prevTasks => {
-        const wasActive = prevTasks.find(t => t.id === id)?.isActive;
-        return prevTasks.map(t => {
+    setTasks(prevTasks =>
+        prevTasks.map(t => {
             if (t.id === id) {
               return { ...t, isActive: !t.isActive };
             }
             // Pause other tasks
             return { ...t, isActive: false };
-        });
-    });
+        })
+    );
   }, []);
 
   const handleCompleteTask = useCallback((id: string) => {
-    const task = tasks.find(t => t.id === id);
-    if (!task) return;
-    updateGamification(task.timeSpent);
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: true, isActive: false } : t));
-  }, [tasks, updateGamification]);
+    setTasks(prev => {
+      const taskToComplete = prev.find(t => t.id === id);
+      if (taskToComplete) {
+        updateGamification(taskToComplete.timeSpent);
+      }
+      return prev.map(t => t.id === id ? { ...t, isCompleted: true, isActive: false } : t);
+    });
+  }, [updateGamification]);
 
   const handleDeleteTask = (id: string) => {
     setTasks(prev => prev.filter(t => t.id !== id));
@@ -309,7 +321,7 @@ export default function App() {
     setIsLoadingInsights(true);
     setAiInsights([]);
     try {
-        if(process.env.API_KEY === "API_KEY_NOT_SET") {
+        if(!process.env.API_KEY || process.env.API_KEY === "API_KEY_NOT_SET") {
             alert("Gemini API Key is not configured. Please set the API_KEY environment variable.");
             setIsLoadingInsights(false);
             return;
@@ -457,7 +469,7 @@ export default function App() {
                     <Card>
                         <SectionTitle>{t('tasks')}</SectionTitle>
                         {ongoingTasks.length > 0 ? (
-                            ongoingTasks.map((task, i) => (
+                            ongoingTasks.map((task) => (
                                 <TaskItem key={task.id} task={task} onToggleTimer={handleToggleTimer} onDelete={handleDeleteTask} onComplete={handleCompleteTask} onLogJira={handleLogJira} t={t} />
                             ))
                         ) : (
@@ -497,17 +509,13 @@ export default function App() {
                                   <XAxis dataKey="name" stroke="#A0A0B0" fontSize={12} tickLine={false} axisLine={false} />
                                   <YAxis stroke="#A0A0B0" fontSize={12} tickLine={false} axisLine={false} />
                                   <Tooltip contentStyle={{ backgroundColor: '#1E1B3A', border: '1px solid #4A4A6A', borderRadius: '8px' }} labelStyle={{ color: '#E0E0E0' }} itemStyle={{ color: '#8884d8' }}/>
-                                  <Bar dataKey="time" name="Minutes" unit=" min" radius={[4, 4, 0, 0]}>
-                                      {weeklyChartData.map((entry, index) => (
-                                          <Cell key={`cell-${index}`} fill="url(#colorUv)" />
-                                      ))}
-                                  </Bar>
                                   <defs>
                                       <linearGradient id="colorUv" x1="0" y1="0" x2="0" y2="1">
                                           <stop offset="5%" stopColor="#8884d8" stopOpacity={0.8}/>
                                           <stop offset="95%" stopColor="#8884d8" stopOpacity={0.2}/>
                                       </linearGradient>
                                   </defs>
+                                  <Bar dataKey="time" name="Minutes" unit=" min" radius={[4, 4, 0, 0]} fill="url(#colorUv)" />
                               </BarChart>
                           </ResponsiveContainer>
                         </div>
